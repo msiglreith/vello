@@ -355,10 +355,10 @@ impl BlitPipeline {
                 }
                 return vec4(vertex, 0.0, 1.0);
             }
-            
+
             @group(0) @binding(0)
             var fine_output: texture_2d<f32>;
-            
+
             @fragment
             fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
                 let rgba_sep = textureLoad(fine_output, vec2<i32>(pos.xy), 0);
