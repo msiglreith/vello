@@ -56,8 +56,8 @@ impl RenderContext {
         let format = capabilities
             .formats
             .into_iter()
-            .find(|it| matches!(it, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm))
-            .expect("surface should support Rgba8Unorm or Bgra8Unorm");
+            .find(|it| matches!(it, TextureFormat::Rgba8UnormSrgb | TextureFormat::Bgra8UnormSrgb))
+            .expect("surface should support Rgba8Unorm or Bgra8UnormSrgb");
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
