@@ -40,6 +40,85 @@ var gradients: texture_2d<f32>;
 @group(0) @binding(6)
 var image_atlas: texture_2d<f32>;
 
+fn srgb_to_linear_component(c: f32) -> f32 {
+    if (c < 0.04045) {
+		  return c / 12.92;
+    } else {
+		  return pow((c + 0.055) / 1.055, 2.4);
+    }
+}
+
+fn srgb_to_linear(c: vec4<f32>) -> vec4<f32> {
+    return vec4(
+        srgb_to_linear_component(c.r),
+        srgb_to_linear_component(c.g),
+        srgb_to_linear_component(c.b),
+        c.a);
+}
+
+fn cbrt(x: f32) -> f32 {
+  return pow(x, 1.0 / 3.0);
+}
+
+fn linear_to_oklab(c: vec4<f32>) -> vec4<f32> {
+    let l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
+    let m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
+    let s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
+
+    let l_ = cbrt(l);
+    let m_ = cbrt(m);
+    let s_ = cbrt(s);
+
+    return vec4(
+        0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+        1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+        0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
+        c.a);
+}
+
+fn oklab_to_linear(c: vec4<f32>) -> vec4<f32> {
+    let l_ = c.r + 0.3963377774 * c.g + 0.2158037573 * c.b;
+    let m_ = c.r - 0.1055613458 * c.g - 0.0638541728 * c.b;
+    let s_ = c.r - 0.0894841775 * c.g - 1.2914855480 * c.b;
+
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+
+    return vec4(
+         4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+        c.a);
+}
+
+let CONTRAST: f32 = 0.5;
+let GAMMA: f32 = 2.2;
+
+fn apply_contrast(srca: f32, contrast: f32) -> f32 {
+    return srca + ((1.0 - srca) * contrast * srca);
+}
+
+fn adjust_coverage(coverage: f32, src_c: vec4<f32>) -> f32 {
+    let src = src_c.r;
+    let dst = 1.0 - src; // todo: could fetch from tile buffer
+    let lin_src = pow(src, GAMMA);
+    let lin_dst = pow(dst, GAMMA);
+
+    let adjusted_contrast = lin_dst * CONTRAST;
+    let srca = apply_contrast(coverage, adjusted_contrast);
+
+    let dsta = 1.0 - srca;
+    let lin_out = lin_src * srca + dsta * lin_dst;
+    let c_out = pow(lin_out, 1.0 / GAMMA);
+
+    return (c_out - dst) / (src - dst);
+}
+
+fn oklab_from_srgb(c: vec4<f32>) -> vec4<f32> {
+    return linear_to_oklab(srgb_to_linear(c));
+}
+
 #ifdef msaa8
 let MASK_WIDTH = 32u;
 let MASK_HEIGHT = 32u;
@@ -859,7 +938,7 @@ fn main(
 #ifdef full
     var rgba: array<vec4<f32>, PIXELS_PER_THREAD>;
     for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
-        rgba[i] = unpack4x8unorm(config.base_color).wzyx;
+        rgba[i] = oklab_from_srgb(unpack4x8unorm(config.base_color).wzyx);
     }
     var blend_stack: array<array<u32, PIXELS_PER_THREAD>, BLEND_STACK_SPLIT>;
     var clip_depth = 0u;
@@ -904,9 +983,9 @@ fn main(
             // CMD_COLOR
             case 5u: {
                 let color = read_color(cmd_ix);
-                let fg = unpack4x8unorm(color.rgba_color).wzyx;
+                let fg = oklab_from_srgb(unpack4x8unorm(color.rgba_color).wzyx);
                 for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
-                    let fg_i = fg * area[i];
+                    let fg_i = fg * adjust_coverage(area[i], fg);
                     rgba[i] = rgba[i] * (1.0 - fg_i.a) + fg_i;
                 }
                 cmd_ix += 2u;
@@ -920,6 +999,8 @@ fn main(
                     let x = i32(round(extend_mode(my_d, lin.extend_mode) * f32(GRADIENT_WIDTH - 1)));
                     let fg_rgba = textureLoad(gradients, vec2(x, i32(lin.index)), 0);
                     let fg_i = fg_rgba * area[i];
+                    let fg_rgba = oklab_from_srgb(textureLoad(gradients, vec2(x, i32(lin.index)), 0));
+                    let fg_i = fg_rgba * adjust_coverage(area[i], fg_rgba);
                     rgba[i] = rgba[i] * (1.0 - fg_i.a) + fg_i;
                 }
                 cmd_ix += 3u;
@@ -963,8 +1044,8 @@ fn main(
                         t = extend_mode(focal_x + t_sign * t, rad.extend_mode);
                         t = select(t, 1.0 - t, is_swapped);
                         let x = i32(round(t * f32(GRADIENT_WIDTH - 1)));
-                        let fg_rgba = textureLoad(gradients, vec2(x, i32(rad.index)), 0);
-                        let fg_i = fg_rgba * area[i];
+                        let fg_rgba = oklab_from_srgb(textureLoad(gradients, vec2(x, i32(rad.index)), 0));
+                        let fg_i = fg_rgba * adjust_coverage(area[i], fg_rgba.r, rgba[i].r * a_inv);
                         rgba[i] = rgba[i] * (1.0 - fg_i.a) + fg_i;
                     }
                 }
@@ -996,7 +1077,7 @@ fn main(
             case 9u: {
                 if clip_depth < BLEND_STACK_SPLIT {
                     for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
-                        blend_stack[clip_depth][i] = pack4x8unorm(rgba[i]);
+                        blend_stack[clip_depth][i] = pack4x8unorm(oklab_to_linear(rgba[i]));
                         rgba[i] = vec4(0.0);
                     }
                 } else {
@@ -1016,7 +1097,7 @@ fn main(
                     } else {
                         // load from memory
                     }
-                    let bg = unpack4x8unorm(bg_rgba);
+                    let bg = linear_to_oklab(unpack4x8unorm(bg_rgba));
                     let fg = rgba[i] * area[i] * end_clip.alpha;
                     rgba[i] = blend_mix_compose(bg, fg, end_clip.blend);
                 }
@@ -1037,7 +1118,7 @@ fn main(
             // Max with a small epsilon to avoid NaNs
             let a_inv = 1.0 / max(fg.a, 1e-6);
             let rgba_sep = vec4(fg.rgb * a_inv, fg.a);
-            textureStore(output, vec2<i32>(coords), rgba_sep);
+            textureStore(output, vec2<i32>(coords), oklab_to_linear(rgba_sep));
         }
     } 
 #else
