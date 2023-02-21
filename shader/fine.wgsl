@@ -167,9 +167,9 @@ fn apply_contrast(srca: f32, contrast: f32) -> f32 {
     return srca + ((1.0 - srca) * contrast * srca);
 }
 
-fn adjust_coverage(coverage: f32, src: f32, dst_: f32) -> f32 {
-    // let dst = 1.0 - src; // todo: could fetch from tile buffer
-    let dst = clamp(dst_, 0.0, 1.0);
+fn adjust_coverage(coverage: f32, src_c: vec4<f32>) -> f32 {
+    let src = src_c.r;
+    let dst = 1.0 - src; // todo: could fetch from tile buffer
     let lin_src = pow(src, GAMMA);
     let lin_dst = pow(dst, GAMMA);
 
@@ -180,7 +180,7 @@ fn adjust_coverage(coverage: f32, src: f32, dst_: f32) -> f32 {
     let lin_out = lin_src * srca + dsta * lin_dst;
     let c_out = pow(lin_out, 1.0 / GAMMA);
 
-    return (c_out - dst) / max((src - dst), 1e-6);
+    return (c_out - dst) / (src - dst);
 }
 
 fn oklab_from_srgb(c: vec4<f32>) -> vec4<f32> {
@@ -330,8 +330,7 @@ fn main(
                 let color = read_color(cmd_ix);
                 let fg = oklab_from_srgb(unpack4x8unorm(color.rgba_color).wzyx);
                 for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
-                    let a_inv = 1.0 / max(rgba[i].a, 1e-6);
-                    let fg_i = fg * adjust_coverage(area[i], fg.r, rgba[i].r * a_inv);
+                    let fg_i = fg * adjust_coverage(area[i], fg);
                     rgba[i] = rgba[i] * (1.0 - fg_i.a) + fg_i;
                 }
                 cmd_ix += 2u;
@@ -344,8 +343,7 @@ fn main(
                     let my_d = d + lin.line_x * f32(i);
                     let x = i32(round(clamp(my_d, 0.0, 1.0) * f32(GRADIENT_WIDTH - 1)));
                     let fg_rgba = oklab_from_srgb(textureLoad(gradients, vec2(x, i32(lin.index)), 0));
-                    let a_inv = 1.0 / max(rgba[i].a, 1e-6);
-                    let fg_i = fg_rgba * adjust_coverage(area[i], fg_rgba.r, rgba[i].r * a_inv);
+                    let fg_i = fg_rgba * adjust_coverage(area[i], fg_rgba);
                     rgba[i] = rgba[i] * (1.0 - fg_i.a) + fg_i;
                 }
                 cmd_ix += 3u;
@@ -362,8 +360,7 @@ fn main(
                     let t = sqrt(ba * ba + ca) - ba - rad.roff;
                     let x = i32(round(clamp(t, 0.0, 1.0) * f32(GRADIENT_WIDTH - 1)));
                     let fg_rgba = oklab_from_srgb(textureLoad(gradients, vec2(x, i32(rad.index)), 0));
-                    let a_inv = 1.0 / max(rgba[i].a, 1e-6);
-                    let fg_i = fg_rgba * adjust_coverage(area[i], fg_rgba.r, rgba[i].r * a_inv);
+                    let fg_i = fg_rgba * adjust_coverage(area[i], fg_rgba);
                     rgba[i] = rgba[i] * (1.0 - fg_i.a) + fg_i;
                 }
                 cmd_ix += 3u;
@@ -394,7 +391,7 @@ fn main(
             case 9u: {
                 if clip_depth < BLEND_STACK_SPLIT {
                     for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
-                        blend_stack[clip_depth][i] = pack4x8unorm(rgba[i]);
+                        blend_stack[clip_depth][i] = pack4x8unorm(oklab_to_linear(rgba[i]));
                         rgba[i] = vec4(0.0);
                     }
                 } else {
@@ -414,7 +411,7 @@ fn main(
                     } else {
                         // load from memory
                     }
-                    let bg = unpack4x8unorm(bg_rgba);
+                    let bg = linear_to_oklab(unpack4x8unorm(bg_rgba));
                     let fg = rgba[i] * area[i] * end_clip.alpha;
                     rgba[i] = blend_mix_compose(bg, fg, end_clip.blend);
                 }
