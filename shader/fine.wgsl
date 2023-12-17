@@ -997,8 +997,6 @@ fn main(
                 for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
                     let my_d = d + lin.line_x * f32(i);
                     let x = i32(round(extend_mode(my_d, lin.extend_mode) * f32(GRADIENT_WIDTH - 1)));
-                    let fg_rgba = textureLoad(gradients, vec2(x, i32(lin.index)), 0);
-                    let fg_i = fg_rgba * area[i];
                     let fg_rgba = oklab_from_srgb(textureLoad(gradients, vec2(x, i32(lin.index)), 0));
                     let fg_i = fg_rgba * adjust_coverage(area[i], fg_rgba);
                     rgba[i] = rgba[i] * (1.0 - fg_i.a) + fg_i;
@@ -1045,7 +1043,7 @@ fn main(
                         t = select(t, 1.0 - t, is_swapped);
                         let x = i32(round(t * f32(GRADIENT_WIDTH - 1)));
                         let fg_rgba = oklab_from_srgb(textureLoad(gradients, vec2(x, i32(rad.index)), 0));
-                        let fg_i = fg_rgba * adjust_coverage(area[i], fg_rgba.r, rgba[i].r * a_inv);
+                        let fg_i = fg_rgba * adjust_coverage(area[i], fg_rgba);
                         rgba[i] = rgba[i] * (1.0 - fg_i.a) + fg_i;
                     }
                 }
@@ -1120,7 +1118,7 @@ fn main(
             let rgba_sep = vec4(fg.rgb * a_inv, fg.a);
             textureStore(output, vec2<i32>(coords), oklab_to_linear(rgba_sep));
         }
-    } 
+    }
 #else
     let tile = tiles[tile_ix];
     var area: array<f32, PIXELS_PER_THREAD>;
